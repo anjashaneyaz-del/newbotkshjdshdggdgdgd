@@ -1,0 +1,5 @@
+python-telegram-bot==20.8
+telethon==1.38.0
+motor==3.7.0
+python-dotenv==1.0.1
+certifi==2025.1.31
