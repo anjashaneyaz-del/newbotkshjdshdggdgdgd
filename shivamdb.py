@@ -26,7 +26,7 @@ API_HASH = "434d1585320580b4070a2c7d6b2fafcd"
 OWNER_ID = 8027403165
 
 # ========== MONGODB CONFIGURATION ==========
-MONGO_URI = "mongodb+srv://vivekbisht489_db_user:jTfDJhtxNuz8FXmM@cluster0.1x3i0eh.mongodb.net"
+MONGO_URI = "mongodb+srv://railway_bot:LZLdkMeqsTU2ZYZz@cluster0.wva6jom.mongodb.net/automation_bot?retryWrites=true&w=majority&appName=Cluster0"
 DB_NAME = "automation_bot"
 
 # ========== PREMIUM CUSTOM EMOJI IDs ==========
