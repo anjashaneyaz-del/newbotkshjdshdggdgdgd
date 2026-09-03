@@ -45,31 +45,6 @@ PREMIUM_EMOJIS = {
     "angel": "5893411041030707544",
     "devil": "5893079628469246474",
 }
-async def main():
-    print("🚀 Starting bot...", flush=True)
-
-    await init_mongo()
-    print("✅ MongoDB ready", flush=True)
-
-    app = Application.builder().token(BOT_TOKEN).build()
-
-    # YAHAN tumhare EXISTING handlers hone chahiye
-    # app.add_handler(...)
-
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
-
-    print("✅ BOT IS RUNNING", flush=True)
-
-    await asyncio.Event().wait()
-
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("🛑 Bot stopped", flush=True)
 
 NORMAL_EMOJIS = [
     "🔥", "❤️", "👍", "😍", "🎉", "💯", "👏", "🥳", "😁", "🤩",
@@ -95,6 +70,29 @@ SCHEDULED_TASKS = {}
 # ========== MongoDB Connection ==========
 mongo_client = None
 db = None
+
+async def init_mongo():
+    global mongo_client, db
+    mongo_client = AsyncIOMotorClient(MONGO_URI)
+    db = mongo_client[DB_NAME]
+    # Create indexes
+    await db.users.create_index("user_id", unique=True)
+    await db.campaigns.create_index("user_id")
+    await db.campaigns.create_index("timestamp")
+    await db.scheduled.create_index("user_id")
+    await db.scheduled.create_index("status")
+    await db.scheduled.create_index("scheduled_time")
+    # Create counters collection if not exists
+    await db.counters.update_one(
+        {"_id": "campaign_id"},
+        {"$setOnInsert": {"seq": 0}},
+        upsert=True
+    )
+    await db.counters.update_one(
+        {"_id": "schedule_id"},
+        {"$setOnInsert": {"seq": 0}},
+        upsert=True
+    )
 
 async def init_mongo():
     global mongo_client, db
