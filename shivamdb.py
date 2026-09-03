@@ -4220,7 +4220,7 @@ async def sync_accounts_on_start():
 def styled_button(label, callback_data):
     return {"text": label, "callback_data": callback_data}
 
-# ========== MAIN ==========
+# ========== MAIN (KEPT ONLY ONE) ==========
 async def main():
     logging.basicConfig(level=logging.ERROR)
     logging.getLogger('telethon').setLevel(logging.ERROR)
@@ -4275,25 +4275,6 @@ async def main():
     await app.start()
     await app.updater.start_polling()
     await asyncio.Event().wait()
-
-async def main():
-    print("🚀 Starting bot...", flush=True)
-
-    await init_mongo()
-    print("✅ MongoDB ready", flush=True)
-
-    app = Application.builder().token(BOT_TOKEN).build()
-
-    # Yahan tumhare existing app.add_handler(...) hone chahiye
-
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
-
-    print("✅ BOT IS RUNNING", flush=True)
-
-    await asyncio.Event().wait()
-
 
 if __name__ == "__main__":
     try:
