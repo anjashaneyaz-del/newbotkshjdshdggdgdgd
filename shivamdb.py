@@ -31,15 +31,18 @@ API_HASH = os.getenv("API_HASH")
 MONGO_URI = os.getenv("MONGO_URI")
 DB_NAME = os.getenv("DB_NAME", "automation_bot")
 
-# Robust OWNER_IDS parsing (handles spaces, empty)
-OWNER_IDS = set()
-owner_ids_str = os.getenv("OWNER_IDS", "7853976578")
-for part in owner_ids_str.split(','):
-    part = part.strip()
-    if part:
-        OWNER_IDS.add(int(part))
+# ========== MULTIPLE OWNERS – parse comma-separated IDs ==========
+OWNER_IDS = {
+    int(x.strip())
+    for x in os.getenv("OWNER_IDS", "").split(",")
+    if x.strip()
+}
 
-print(f"DEBUG: OWNER_IDS loaded as: {OWNER_IDS}")
+# If no OWNER_IDS set, fallback to a single default (keep compatibility)
+if not OWNER_IDS:
+    OWNER_IDS = {7853976578}
+
+print(f"Loaded {len(OWNER_IDS)} owner IDs: {OWNER_IDS}")
 
 # Validate required variables
 if not BOT_TOKEN or not API_ID or not API_HASH or not MONGO_URI:
@@ -93,7 +96,7 @@ async def init_mongo():
         MONGO_URI,
         tls=True,
         tlsCAFile=certifi.where(),
-        tlsAllowInvalidCertificates=False,  # Set to True only for debugging
+        tlsAllowInvalidCertificates=False,
         tlsAllowInvalidHostnames=False,
         connectTimeoutMS=20000,
         socketTimeoutMS=20000,
@@ -413,7 +416,8 @@ async def save_settings(user_id, settings):
         upsert=True
     )
 
-def is_owner(user_id):
+# ========== Owner helper ==========
+def is_owner(user_id: int) -> bool:
     return user_id in OWNER_IDS
 
 # ========== ACCOUNT LIVENESS ==========
@@ -1976,8 +1980,8 @@ async def handle_remove_access(update: Update, context: ContextTypes.DEFAULT_TYP
 
     try:
         target_user = int(text.strip())
-        if target_user in OWNER_IDS:
-            await update.message.reply_text("❌ Cannot remove owner!")
+        if is_owner(target_user):
+            await update.message.reply_text("❌ Cannot remove owner's access!")
             WAITING_FOR.pop(user_id, None)
             return
 
@@ -3496,7 +3500,7 @@ async def handle_admin_grant_admin(update: Update, context: ContextTypes.DEFAULT
 
     try:
         target = int(text.strip())
-        if target in OWNER_IDS:
+        if is_owner(target):
             await update.message.reply_text("❌ Cannot change owner's admin status!")
             WAITING_FOR.pop(user_id, None)
             return
@@ -3516,7 +3520,7 @@ async def handle_admin_revoke_admin(update: Update, context: ContextTypes.DEFAUL
 
     try:
         target = int(text.strip())
-        if target in OWNER_IDS:
+        if is_owner(target):
             await update.message.reply_text("❌ Cannot change owner's admin status!")
             WAITING_FOR.pop(user_id, None)
             return
@@ -3594,7 +3598,7 @@ async def admin_all_users_list(update: Update, context: ContextTypes.DEFAULT_TYP
         uid, username, first_name, joined_date, is_banned_user, access_expiry, shared_limit, is_admin_flag = u
         personal_accounts = await load_accounts(uid)
 
-        if uid in OWNER_IDS:
+        if is_owner(uid):
             status = "👑 OWNER"
         elif is_admin_flag:
             status = "👨‍💼 ADMIN"
@@ -3627,7 +3631,7 @@ async def handle_admin_ban_user(update: Update, context: ContextTypes.DEFAULT_TY
 
     try:
         target = int(text.strip())
-        if target in OWNER_IDS:
+        if is_owner(target):
             await update.message.reply_text("❌ Cannot ban owner!")
             WAITING_FOR.pop(user_id, None)
             return
@@ -3913,11 +3917,11 @@ async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     personal_accounts = await load_accounts(user_id)
     campaigns = await load_campaigns(user_id)
 
-    admin_badge = " 👑 OWNER" if user_id in OWNER_IDS else (" 👨‍💼 ADMIN" if is_admin_flag else "")
+    admin_badge = " 👑 OWNER" if is_owner(user_id) else (" 👨‍💼 ADMIN" if is_admin_flag else "")
 
     text = f"👤 PROFILE{admin_badge}\n━━━━━━━━━━━━━━━━━━━━━━\n\n🆔 {user_id}\n👤 {first_name}\n📝 @{username}\n📅 {joined_date[:10] if joined_date else 'Unknown'}\n📱 Personal: {len(personal_accounts)}\n🔗 Shared Limit: {shared_limit}\n📁 Purchased: {len(campaigns)}"
 
-    if access_expiry and user_id not in OWNER_IDS:
+    if access_expiry and not is_owner(user_id):
         exp_date = datetime.fromisoformat(access_expiry).strftime("%Y-%m-%d")
         text += f"\n⏰ Access until: {exp_date}"
 
