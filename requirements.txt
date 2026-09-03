@@ -1,8 +1,7 @@
-python-dotenv
-pymongo>=4.13
-certifi>=2024.0.0
-telethon
-dnspython
-python-telegram-bot==22.8
+# Core dependencies
+python-telegram-bot>=20.0,<21.0
+motor>=3.0,<4.0
 telethon>=1.28,<2.0
-motor>=3.1,<4.0
+
+# Optional but recommended for Telethon speed (MTProto encryption)
+cryptg>=0.4.0
