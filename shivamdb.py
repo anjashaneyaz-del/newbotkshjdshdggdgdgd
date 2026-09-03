@@ -90,8 +90,14 @@ SCHEDULED_TASKS = {}
 mongo_client = None
 db = None
 
+mongo_client = None
+db = None
+
 async def init_mongo():
     global mongo_client, db
+
+    print("🔄 Connecting to MongoDB...", flush=True)
+
     mongo_client = AsyncIOMotorClient(
         MONGO_URI,
         tls=True,
@@ -102,32 +108,37 @@ async def init_mongo():
         socketTimeoutMS=20000,
         serverSelectionTimeoutMS=30000,
     )
+
+    print("🔄 Testing MongoDB connection...", flush=True)
+
+    await mongo_client.admin.command("ping")
+
+    print("✅ MongoDB ping successful", flush=True)
+
     db = mongo_client[DB_NAME]
+
+    print("🔄 Creating indexes...", flush=True)
+
     await db.users.create_index("user_id", unique=True)
     await db.campaigns.create_index("user_id")
     await db.campaigns.create_index("timestamp")
     await db.scheduled.create_index("user_id")
     await db.scheduled.create_index("status")
     await db.scheduled.create_index("scheduled_time")
+
     await db.counters.update_one(
         {"_id": "campaign_id"},
         {"$setOnInsert": {"seq": 0}},
         upsert=True
     )
+
     await db.counters.update_one(
         {"_id": "schedule_id"},
         {"$setOnInsert": {"seq": 0}},
         upsert=True
     )
 
-async def get_next_sequence(name):
-    result = await db.counters.find_one_and_update(
-        {"_id": name},
-        {"$inc": {"seq": 1}},
-        return_document=True
-    )
-    return result["seq"]
-
+    print("✅ MongoDB initialization complete", flush=True)
 # ========== DB Functions ==========
 
 async def get_user(user_id):
