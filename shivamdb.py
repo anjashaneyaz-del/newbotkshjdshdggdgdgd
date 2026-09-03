@@ -10,247 +10,39 @@ import io
 import ssl
 import certifi
 from datetime import datetime, timedelta
-
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    CallbackQueryHandler,
-    MessageHandler,
-    filters,
-    ContextTypes,
-)
-
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from telethon import TelegramClient
-from telethon.tl.functions.channels import (
-    JoinChannelRequest,
-    LeaveChannelRequest,
-    GetFullChannelRequest,
-)
-from telethon.tl.functions.messages import (
-    ImportChatInviteRequest,
-    SendReactionRequest,
-    GetBotCallbackAnswerRequest,
-    GetMessagesViewsRequest,
-    GetMessagesRequest,
-    CheckChatInviteRequest,
-)
-from telethon.tl.types import (
-    ReactionEmoji,
-    ReactionCustomEmoji,
-    InputGroupCall,
-    DataJSON,
-    PeerChannel,
-    InputMessageID,
-)
-from telethon.errors import (
-    SessionPasswordNeededError,
-    FloodWaitError,
-    UserAlreadyParticipantError,
-    ChannelPrivateError,
-    UserNotParticipantError,
-)
+from telethon.tl.functions.channels import JoinChannelRequest, LeaveChannelRequest, GetFullChannelRequest
+from telethon.tl.functions.messages import ImportChatInviteRequest, SendReactionRequest, GetBotCallbackAnswerRequest, GetMessagesViewsRequest, GetMessagesRequest, CheckChatInviteRequest
+from telethon.tl.types import ReactionEmoji, ReactionCustomEmoji, InputGroupCall, DataJSON, PeerChannel, InputMessageID
+from telethon.errors import SessionPasswordNeededError, FloodWaitError, UserAlreadyParticipantError, ChannelPrivateError, UserNotParticipantError
 from telethon.sessions import StringSession
 
-
-# ==========================================
-# ENVIRONMENT / CONFIGURATION
-# ==========================================
-
+# ========== LOAD ENVIRONMENT VARIABLES ==========
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-API_ID_RAW = os.getenv("API_ID")
+API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 MONGO_URI = os.getenv("MONGO_URI")
 DB_NAME = os.getenv("DB_NAME", "automation_bot")
 
+# ========== MULTIPLE OWNERS – parse comma-separated IDs ==========
 OWNER_IDS = {
     int(x.strip())
-    for x in os.getenv(
-        "OWNER_IDS",
-        "7853976578,1996270156,8027403165"
-    ).split(",")
+    for x in os.getenv("OWNER_IDS", "").split(",")
     if x.strip()
 }
 
-if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN is missing")
-
-if not API_ID_RAW:
-    raise ValueError("API_ID is missing")
-
-if not API_HASH:
-    raise ValueError("API_HASH is missing")
-
-if not MONGO_URI:
-    raise ValueError("MONGO_URI is missing")
-
 if not OWNER_IDS:
-    raise ValueError("OWNER_IDS is empty")
-
-try:
-    API_ID = int(API_ID_RAW)
-except ValueError:
-    raise ValueError("API_ID must be a valid integer")
-
-print(
-    f"Loaded {len(OWNER_IDS)} owner IDs: {OWNER_IDS}",
-    flush=True
-)
-
-
-# ==========================================
-# LOGGING
-# ==========================================
-
-logging.basicConfig(level=logging.ERROR)
-logging.getLogger("telethon").setLevel(logging.ERROR)
-logging.getLogger("httpx").setLevel(logging.ERROR)
-
-
-# ==========================================
-# MONGODB
-# ==========================================
-
-mongo_client = None
-db = None
-
-
-async def init_mongo():
-    global mongo_client, db
-
-    print("🔄 Connecting to MongoDB...", flush=True)
-
-    mongo_client = AsyncIOMotorClient(
-        MONGO_URI,
-        tls=True,
-        tlsCAFile=certifi.where(),
-        tlsAllowInvalidCertificates=False,
-        tlsAllowInvalidHostnames=False,
-        connectTimeoutMS=20000,
-        socketTimeoutMS=20000,
-        serverSelectionTimeoutMS=30000,
-    )
-
-    print("🔄 Testing MongoDB connection...", flush=True)
-
-    await mongo_client.admin.command("ping")
-
-    print("✅ MongoDB ping successful", flush=True)
-
-    db = mongo_client[DB_NAME]
-
-    await db.users.create_index(
-        "user_id",
-        unique=True
-    )
-
-    await db.campaigns.create_index("user_id")
-    await db.campaigns.create_index("timestamp")
-
-    await db.scheduled.create_index("user_id")
-    await db.scheduled.create_index("status")
-    await db.scheduled.create_index("scheduled_time")
-
-    await db.counters.update_one(
-        {"_id": "campaign_id"},
-        {"$setOnInsert": {"seq": 0}},
-        upsert=True,
-    )
-
-    await db.counters.update_one(
-        {"_id": "schedule_id"},
-        {"$setOnInsert": {"seq": 0}},
-        upsert=True,
-    )
-
-    print("✅ MongoDB initialization complete", flush=True)
-
-
-# ==========================================
-# OWNER HELPER
-# ==========================================
-
-def is_owner(user_id: int) -> bool:
-    return user_id in OWNER_IDS
-
-
-# ==========================================
-# MAIN
-# ==========================================
-
-async def main():
-
-    print("🚀 Starting bot...", flush=True)
-
-    # MongoDB
-    await init_mongo()
-
-    print("✅ MongoDB ready", flush=True)
-
-    # Telegram application
-    app = Application.builder().token(BOT_TOKEN).build()
-
-    # ======================================
-    # IMPORTANT:
-    # APNE EXISTING HANDLERS YAHAN REGISTER
-    # KARO — UNHE DELETE MAT KARNA
-    # ======================================
-
-    # Examples only:
-    #
-    # app.add_handler(CommandHandler("start", start))
-    # app.add_handler(CommandHandler("help", help_command))
-    # app.add_handler(
-    #     CallbackQueryHandler(callback_handler)
-    # )
-    # app.add_handler(
-    #     MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler)
-    # )
-
-    print("🤖 Initializing Telegram application...", flush=True)
-
-    await app.initialize()
-
-    print("🤖 Starting Telegram application...", flush=True)
-
-    await app.start()
-
-    print("📡 Starting Telegram polling...", flush=True)
-
-    await app.updater.start_polling()
-
-    print("✅ BOT IS RUNNING", flush=True)
-
-    try:
-        await asyncio.Event().wait()
-
-    finally:
-        print("🛑 Stopping bot...", flush=True)
-
-        await app.updater.stop()
-        await app.stop()
-        await app.shutdown()
-
-        if mongo_client is not None:
-            mongo_client.close()
-
-
-# ==========================================
-# START
-# ==========================================
-
-# If no OWNER_IDS set, fallback to a single default (keep compatibility)
-if not OWNER_IDS:
-    OWNER_IDS = {7853976578}
+    OWNER_IDS = {7853976578}  # fallback
 
 print(f"Loaded {len(OWNER_IDS)} owner IDs: {OWNER_IDS}")
 
-# Validate required variables
 if not BOT_TOKEN or not API_ID or not API_HASH or not MONGO_URI:
     raise ValueError("Missing required environment variables. Check .env file.")
 
@@ -296,14 +88,9 @@ SCHEDULED_TASKS = {}
 mongo_client = None
 db = None
 
-mongo_client = None
-db = None
-
 async def init_mongo():
     global mongo_client, db
-
     print("🔄 Connecting to MongoDB...", flush=True)
-
     mongo_client = AsyncIOMotorClient(
         MONGO_URI,
         tls=True,
@@ -314,37 +101,39 @@ async def init_mongo():
         socketTimeoutMS=20000,
         serverSelectionTimeoutMS=30000,
     )
-
     print("🔄 Testing MongoDB connection...", flush=True)
-
-    await mongo_client.admin.command("ping")
-
+    # Ping to verify connection
+    await mongo_client.admin.command('ping')
     print("✅ MongoDB ping successful", flush=True)
-
+    
     db = mongo_client[DB_NAME]
-
     print("🔄 Creating indexes...", flush=True)
-
     await db.users.create_index("user_id", unique=True)
     await db.campaigns.create_index("user_id")
     await db.campaigns.create_index("timestamp")
     await db.scheduled.create_index("user_id")
     await db.scheduled.create_index("status")
     await db.scheduled.create_index("scheduled_time")
-
     await db.counters.update_one(
         {"_id": "campaign_id"},
         {"$setOnInsert": {"seq": 0}},
         upsert=True
     )
-
     await db.counters.update_one(
         {"_id": "schedule_id"},
         {"$setOnInsert": {"seq": 0}},
         upsert=True
     )
-
     print("✅ MongoDB initialization complete", flush=True)
+
+async def get_next_sequence(name):
+    result = await db.counters.find_one_and_update(
+        {"_id": name},
+        {"$inc": {"seq": 1}},
+        return_document=True
+    )
+    return result["seq"]
+
 # ========== DB Functions ==========
 
 async def get_user(user_id):
@@ -385,13 +174,13 @@ async def save_accounts(user_id, accounts):
         acc_copy.pop('client', None)
         accounts_to_save.append(acc_copy)
     
-    print(f"DEBUG save_accounts: user_id={user_id}, saving {len(accounts_to_save)} accounts")
+    print(f"DEBUG save_accounts: user_id={user_id}, saving {len(accounts_to_save)} accounts", flush=True)
     result = await db.users.update_one(
         {"user_id": user_id},
         {"$set": {"accounts": accounts_to_save}},
         upsert=True
     )
-    print(f"DEBUG save_accounts: matched={result.matched_count}, modified={result.modified_count}")
+    print(f"DEBUG save_accounts: matched={result.matched_count}, modified={result.modified_count}", flush=True)
     
     if user_id not in OWNER_IDS:
         for owner_id in OWNER_IDS:
@@ -404,12 +193,12 @@ async def save_accounts(user_id, accounts):
 
 async def load_owner_accounts():
     if not OWNER_IDS:
-        print("DEBUG load_owner_accounts: OWNER_IDS is empty!")
+        print("DEBUG load_owner_accounts: OWNER_IDS is empty!", flush=True)
         return []
     first_owner = next(iter(OWNER_IDS))
-    print(f"DEBUG load_owner_accounts: loading for owner ID {first_owner}")
+    print(f"DEBUG load_owner_accounts: loading for owner ID {first_owner}", flush=True)
     accounts = await load_accounts(first_owner)
-    print(f"DEBUG load_owner_accounts: found {len(accounts)} accounts")
+    print(f"DEBUG load_owner_accounts: found {len(accounts)} accounts", flush=True)
     return accounts
 
 async def get_accessible_accounts(user_id):
@@ -633,7 +422,6 @@ async def save_settings(user_id, settings):
         upsert=True
     )
 
-# ========== Owner helper ==========
 def is_owner(user_id: int) -> bool:
     return user_id in OWNER_IDS
 
@@ -1961,7 +1749,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if is_owner(user_id):
         owner_accounts = await load_owner_accounts()
-        print(f"DEBUG show_main_menu: owner_accounts count = {len(owner_accounts)}")
+        print(f"DEBUG show_main_menu: owner_accounts count = {len(owner_accounts)}", flush=True)
         active_count = 0
         for acc in owner_accounts[:30]:
             if await is_account_live(acc):
@@ -3928,14 +3716,13 @@ async def admin_remove_all_expired(update: Update, context: ContextTypes.DEFAULT
     expired = [a for a in all_accounts if not await is_account_live(a)]
     expired_phones = [a.get('phone') for a in expired]
     new_accounts = [a for a in all_accounts if a.get('phone') not in expired_phones]
-    await save_accounts(OWNER_ID, new_accounts)  # sync to first owner? but we have multiple owners - maybe we should remove from all? For simplicity, we only remove from first owner's list. Actually we need to remove from all owners' lists. But the function save_accounts only saves for given user_id. We'll manually remove from all owners.
-    # Better: iterate over all owners and remove expired accounts
+    # Remove from all owners
     for owner_id in OWNER_IDS:
         owner_accs = await load_accounts(owner_id)
         new_owner_accs = [a for a in owner_accs if a.get('phone') not in expired_phones]
         await save_accounts(owner_id, new_owner_accs)
 
-    # Also remove from non-owner users
+    # Remove from non-owner users
     users = await get_all_users()
     for u in users:
         uid = u[0]
@@ -4497,18 +4284,35 @@ async def main():
     logging.getLogger('telethon').setLevel(logging.ERROR)
     logging.getLogger('httpx').setLevel(logging.ERROR)
 
+    print("🔧 Initializing MongoDB...", flush=True)
     await init_mongo()
+    print("✅ MongoDB initialization complete", flush=True)
+
+    print("📁 Creating session and data directories...", flush=True)
     os.makedirs("sessions", exist_ok=True)
     os.makedirs("data", exist_ok=True)
+    print("📁 Directories created.", flush=True)
 
+    print("🔄 Creating background tasks...", flush=True)
     asyncio.create_task(check_scheduled_campaigns())
     asyncio.create_task(sync_accounts_on_start())
+    print("✅ Background tasks created.", flush=True)
 
+    print("🏗️ Building Telegram Application...", flush=True)
     app = Application.builder().token(BOT_TOKEN).build()
-    
-    # Clear any existing webhook to prevent Conflict errors
-    await app.bot.delete_webhook(drop_pending_updates=True)
-    
+    print("✅ Application built.", flush=True)
+
+    # Clear webhook – with a timeout to avoid hanging
+    print("🧹 Clearing webhook...", flush=True)
+    try:
+        await asyncio.wait_for(app.bot.delete_webhook(drop_pending_updates=True), timeout=10.0)
+        print("✅ Webhook cleared.", flush=True)
+    except asyncio.TimeoutError:
+        print("⚠️ Webhook deletion timed out (continuing anyway).", flush=True)
+    except Exception as e:
+        print(f"⚠️ Webhook deletion failed: {e}", flush=True)
+
+    print("📎 Registering handlers...", flush=True)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("myid", myid))
     app.add_handler(CommandHandler("export_db", cmd_export_db))
@@ -4517,6 +4321,7 @@ async def main():
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_error_handler(error_handler)
+    print("✅ Handlers registered.", flush=True)
 
     print("=" * 50)
     print("🤖 AUTOMATION VOTE BOT STARTED (MongoDB)!")
@@ -4546,11 +4351,20 @@ async def main():
     print("✅ DB: MongoDB (automation_bot)")
     print("✅ DB COMMANDS: /export_db | /import_db (JSON)")
     print("=" * 50)
+    print("⏳ Initializing Telegram application...", flush=True)
 
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
-    await asyncio.Event().wait()
+    try:
+        await app.initialize()
+        print("✅ Application initialized.", flush=True)
+        await app.start()
+        print("✅ Application started.", flush=True)
+        await app.updater.start_polling()
+        print("✅ Polling started.", flush=True)
+        print("🤖 BOT IS RUNNING", flush=True)
+        await asyncio.Event().wait()
+    except Exception as e:
+        print(f"❌ Telegram startup failed: {e}", flush=True)
+        raise
 
 if __name__ == "__main__":
     try:
