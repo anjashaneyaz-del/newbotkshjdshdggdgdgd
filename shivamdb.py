@@ -94,29 +94,6 @@ async def init_mongo():
         upsert=True
     )
 
-async def init_mongo():
-    global mongo_client, db
-    mongo_client = AsyncIOMotorClient(MONGO_URI)
-    db = mongo_client[DB_NAME]
-    # Create indexes
-    await db.users.create_index("user_id", unique=True)
-    await db.campaigns.create_index("user_id")
-    await db.campaigns.create_index("timestamp")
-    await db.scheduled.create_index("user_id")
-    await db.scheduled.create_index("status")
-    await db.scheduled.create_index("scheduled_time")
-    # Create counters collection if not exists
-    await db.counters.update_one(
-        {"_id": "campaign_id"},
-        {"$setOnInsert": {"seq": 0}},
-        upsert=True
-    )
-    await db.counters.update_one(
-        {"_id": "schedule_id"},
-        {"$setOnInsert": {"seq": 0}},
-        upsert=True
-    )
-
 async def get_next_sequence(name):
     """Get next integer sequence for campaign or schedule ID."""
     result = await db.counters.find_one_and_update(
@@ -4220,20 +4197,21 @@ async def sync_accounts_on_start():
 def styled_button(label, callback_data):
     return {"text": label, "callback_data": callback_data}
 
-# ========== MAIN (KEPT ONLY ONE) ==========
+# ========== MAIN (SINGLE, WITH LOGS) ==========
 async def main():
-    logging.basicConfig(level=logging.ERROR)
-    logging.getLogger('telethon').setLevel(logging.ERROR)
-    logging.getLogger('httpx').setLevel(logging.ERROR)
+    # Flush all prints immediately
+    import sys
+    sys.stdout.reconfigure(line_buffering=True)
+
+    print("🚀 Starting bot...", flush=True)
 
     await init_mongo()
-    os.makedirs("sessions", exist_ok=True)
-    os.makedirs("data", exist_ok=True)
-
-    asyncio.create_task(check_scheduled_campaigns())
-    asyncio.create_task(sync_accounts_on_start())
+    print("✅ MongoDB ready", flush=True)
 
     app = Application.builder().token(BOT_TOKEN).build()
+    print("✅ Telegram application created", flush=True)
+
+    # Register ALL handlers (existing functionality)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("export_db", cmd_export_db))
     app.add_handler(CommandHandler("import_db", cmd_import_db))
@@ -4242,38 +4220,21 @@ async def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_error_handler(error_handler)
 
-    print("=" * 50)
-    print("🤖 AUTOMATION VOTE BOT STARTED (MongoDB)!")
-    print("=" * 50)
-    print(f"✅ Owner ID: {OWNER_ID}")
-    print("=" * 50)
-    print("✅ ALL ACTIONS WORKING (PUBLIC + PRIVATE):")
-    print("   - Join Channel ✅")
-    print("   - Leave Specific Channel ✅")
-    print("   - LEAVE ALL Channels ✅")
-    print("   - React Only | Different Reactions ✅")
-    print("   - Multiple Reactions (Select Emojis) ✅")
-    print("   - Premium Emoji (Auto-Detect) ✅")
-    print("   - View Only (GetMessagesViewsRequest) ✅")
-    print("   - PRIVATE CHANNEL VIEW (Auto-join + View) ✅")
-    print("   - Vote Only | React + Vote | React + View ✅")
-    print("   - Vote + View | React + Vote + View ✅")
-    print("   - Bulk DM | VC (Voice Chat) ✅")
-    print("   - Group Spam ✅")
-    print("=" * 50)
-    print("✅ ZIP UPLOAD: Add accounts via ZIP file (with timeouts!)")
-    print("✅ ADMIN GRANT: Owner can grant admin rights")
-    print("✅ ACCESS MANAGEMENT: Added to Admin Panel")
-    print("✅ BROADCAST: Admin can broadcast messages")
-    print("✅ PYROGRAM SESSION: Stored (beta, not usable)")
-    print("=" * 50)
-    print("✅ DB: MongoDB (automation_bot)")
-    print("✅ DB COMMANDS: /export_db | /import_db (JSON)")
-    print("=" * 50)
+    print("✅ Handlers registered", flush=True)
+
+    # Start background tasks (scheduled campaigns & account sync)
+    asyncio.create_task(check_scheduled_campaigns())
+    asyncio.create_task(sync_accounts_on_start())
+
+    print("✅ Background tasks started", flush=True)
 
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
+
+    print("✅ BOT IS RUNNING", flush=True)
+
+    # Keep running
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
