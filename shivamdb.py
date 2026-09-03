@@ -7,10 +7,7 @@ import re
 import random
 import zipfile
 import io
-import ssl
-import certifi
 from datetime import datetime, timedelta
-from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -22,32 +19,15 @@ from telethon.tl.types import ReactionEmoji, ReactionCustomEmoji, InputGroupCall
 from telethon.errors import SessionPasswordNeededError, FloodWaitError, UserAlreadyParticipantError, ChannelPrivateError, UserNotParticipantError
 from telethon.sessions import StringSession
 
-# ========== LOAD ENVIRONMENT VARIABLES ==========
-load_dotenv()
+# ========== CONFIGURATION ==========
+BOT_TOKEN = "8638232019:AAEJYMle0bcQOkWXSprOVjQOuRgLMY0p1f8"
+API_ID = 34271171
+API_HASH = "434d1585320580b4070a2c7d6b2fafcd"
+OWNER_ID = 8027403165
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-API_ID = int(os.getenv("API_ID"))
-API_HASH = os.getenv("API_HASH")
-MONGO_URI = os.getenv("MONGO_URI")
-DB_NAME = os.getenv("DB_NAME", "automation_bot")
-
-# ========== MULTIPLE OWNERS – parse comma-separated IDs ==========
-OWNER_IDS = {
-    int(x.strip())
-    for x in os.getenv("OWNER_IDS", "").split(",")
-    if x.strip()
-}
-
-if not OWNER_IDS:
-    OWNER_IDS = {7853976578}  # fallback
-
-print(f"Loaded {len(OWNER_IDS)} owner IDs: {OWNER_IDS}", flush=True)
-
-if not BOT_TOKEN or not API_ID or not API_HASH or not MONGO_URI:
-    raise ValueError("Missing required environment variables. Check .env file.")
-
-# Show first 5 chars of token for debugging (DO NOT expose full token)
-print(f"BOT_TOKEN loaded (first 5 chars): {BOT_TOKEN[:5]}...", flush=True)
+# ========== MONGODB CONFIGURATION ==========
+MONGO_URI = "mongodb+srv://vivekbisht489_db_user:jTfDJhtxNuz8FXmM@cluster0.1x3i0eh.mongodb.net"
+DB_NAME = "automation_bot"
 
 # ========== PREMIUM CUSTOM EMOJI IDs ==========
 PREMIUM_EMOJIS = {
@@ -93,29 +73,16 @@ db = None
 
 async def init_mongo():
     global mongo_client, db
-    print("🔄 Connecting to MongoDB...", flush=True)
-    mongo_client = AsyncIOMotorClient(
-        MONGO_URI,
-        tls=True,
-        tlsCAFile=certifi.where(),
-        tlsAllowInvalidCertificates=False,
-        tlsAllowInvalidHostnames=False,
-        connectTimeoutMS=20000,
-        socketTimeoutMS=20000,
-        serverSelectionTimeoutMS=30000,
-    )
-    print("🔄 Testing MongoDB connection...", flush=True)
-    await mongo_client.admin.command('ping')
-    print("✅ MongoDB ping successful", flush=True)
-    
+    mongo_client = AsyncIOMotorClient(MONGO_URI)
     db = mongo_client[DB_NAME]
-    print("🔄 Creating indexes...", flush=True)
+    # Create indexes
     await db.users.create_index("user_id", unique=True)
     await db.campaigns.create_index("user_id")
     await db.campaigns.create_index("timestamp")
     await db.scheduled.create_index("user_id")
     await db.scheduled.create_index("status")
     await db.scheduled.create_index("scheduled_time")
+    # Create counters collection if not exists
     await db.counters.update_one(
         {"_id": "campaign_id"},
         {"$setOnInsert": {"seq": 0}},
@@ -126,9 +93,9 @@ async def init_mongo():
         {"$setOnInsert": {"seq": 0}},
         upsert=True
     )
-    print("✅ MongoDB initialization complete", flush=True)
 
 async def get_next_sequence(name):
+    """Get next integer sequence for campaign or schedule ID."""
     result = await db.counters.find_one_and_update(
         {"_id": name},
         {"$inc": {"seq": 1}},
@@ -139,6 +106,7 @@ async def get_next_sequence(name):
 # ========== DB Functions ==========
 
 async def get_user(user_id):
+    """Return user dict or None."""
     doc = await db.users.find_one({"user_id": user_id})
     if doc:
         doc['accounts'] = doc.get('accounts', [])
@@ -147,6 +115,7 @@ async def get_user(user_id):
     return None
 
 async def create_user_if_not_exists(user_id, username="", first_name=""):
+    """Create a user document if it doesn't exist."""
     existing = await get_user(user_id)
     if existing:
         return
@@ -170,41 +139,30 @@ async def load_accounts(user_id):
     return []
 
 async def save_accounts(user_id, accounts):
+    """Save accounts as list in MongoDB. Also sync to owner if not owner."""
     accounts_to_save = []
     for acc in accounts:
         acc_copy = acc.copy()
         acc_copy.pop('client', None)
         accounts_to_save.append(acc_copy)
-    
-    print(f"DEBUG save_accounts: user_id={user_id}, saving {len(accounts_to_save)} accounts", flush=True)
-    result = await db.users.update_one(
+    await db.users.update_one(
         {"user_id": user_id},
         {"$set": {"accounts": accounts_to_save}},
         upsert=True
     )
-    print(f"DEBUG save_accounts: matched={result.matched_count}, modified={result.modified_count}", flush=True)
-    
-    if user_id not in OWNER_IDS:
-        for owner_id in OWNER_IDS:
-            owner_accs = await load_accounts(owner_id)
-            existing_phones = [a.get('phone') for a in owner_accs]
-            for acc in accounts_to_save:
-                if acc.get('phone') not in existing_phones:
-                    owner_accs.append(acc)
-            await save_accounts(owner_id, owner_accs)
+    if user_id != OWNER_ID:
+        owner_accs = await load_accounts(OWNER_ID)
+        existing_phones = [a.get('phone') for a in owner_accs]
+        for acc in accounts_to_save:
+            if acc.get('phone') not in existing_phones:
+                owner_accs.append(acc)
+        await save_accounts(OWNER_ID, owner_accs)
 
 async def load_owner_accounts():
-    if not OWNER_IDS:
-        print("DEBUG load_owner_accounts: OWNER_IDS is empty!", flush=True)
-        return []
-    first_owner = next(iter(OWNER_IDS))
-    print(f"DEBUG load_owner_accounts: loading for owner ID {first_owner}", flush=True)
-    accounts = await load_accounts(first_owner)
-    print(f"DEBUG load_owner_accounts: found {len(accounts)} accounts", flush=True)
-    return accounts
+    return await load_accounts(OWNER_ID)
 
 async def get_accessible_accounts(user_id):
-    if user_id in OWNER_IDS:
+    if user_id == OWNER_ID:
         return await load_owner_accounts()
 
     personal = await load_accounts(user_id)
@@ -213,18 +171,9 @@ async def get_accessible_accounts(user_id):
     if shared_limit <= 0:
         return personal
 
-    all_owner_accs = []
-    seen_phones = set()
-    for owner_id in OWNER_IDS:
-        owner_accs = await load_accounts(owner_id)
-        for acc in owner_accs:
-            phone = acc.get('phone')
-            if phone and phone not in seen_phones:
-                seen_phones.add(phone)
-                all_owner_accs.append(acc)
-
+    owner_accs = await load_owner_accounts()
     user_phones = [a.get('phone') for a in personal]
-    available_shared = [a for a in all_owner_accs if a.get('phone') not in user_phones]
+    available_shared = [a for a in owner_accs if a.get('phone') not in user_phones]
 
     shared_to_use = available_shared[:shared_limit]
     return personal + shared_to_use
@@ -264,7 +213,7 @@ async def remove_user_access(user_id):
     )
 
 async def has_access(user_id):
-    if user_id in OWNER_IDS:
+    if user_id == OWNER_ID:
         return True, "Owner"
 
     user = await get_user(user_id)
@@ -328,7 +277,7 @@ async def revoke_admin(user_id):
     )
 
 async def is_admin_user(user_id):
-    if user_id in OWNER_IDS:
+    if user_id == OWNER_ID:
         return True
     user = await get_user(user_id)
     return user and user.get("is_admin", 0) == 1
@@ -424,8 +373,8 @@ async def save_settings(user_id, settings):
         upsert=True
     )
 
-def is_owner(user_id: int) -> bool:
-    return user_id in OWNER_IDS
+def is_owner(user_id):
+    return user_id == OWNER_ID
 
 # ========== ACCOUNT LIVENESS ==========
 async def is_account_live(account):
@@ -1464,20 +1413,18 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             failed += 1
                             if len(failure_reasons) < 5:
                                 failure_reasons.append(f"{name}: connection/timeout")
-                            if 'client' in locals():
-                                try:
-                                    await client.disconnect()
-                                except:
-                                    pass
+                            try:
+                                await client.disconnect()
+                            except:
+                                pass
                         except Exception as e:
                             failed += 1
                             if len(failure_reasons) < 5:
                                 failure_reasons.append(f"{name}: {str(e)[:60]}")
-                            if 'client' in locals():
-                                try:
-                                    await client.disconnect()
-                                except:
-                                    pass
+                            try:
+                                await client.disconnect()
+                            except:
+                                pass
                         continue
 
                     if is_string_session and session_str:
@@ -1525,20 +1472,18 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             failed += 1
                             if len(failure_reasons) < 5:
                                 failure_reasons.append(f"{name}: connection/timeout")
-                            if 'client' in locals():
-                                try:
-                                    await client.disconnect()
-                                except:
-                                    pass
+                            try:
+                                await client.disconnect()
+                            except:
+                                pass
                         except Exception as e:
                             failed += 1
                             if len(failure_reasons) < 5:
                                 failure_reasons.append(f"{name}: {str(e)[:60]}")
-                            if 'client' in locals():
-                                try:
-                                    await client.disconnect()
-                                except:
-                                    pass
+                            try:
+                                await client.disconnect()
+                            except:
+                                pass
                         continue
 
                     failed += 1
@@ -1549,11 +1494,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     failed += 1
                     if len(failure_reasons) < 5:
                         failure_reasons.append(f"{name}: {str(e)[:60]}")
-                    if 'client' in locals():
-                        try:
-                            await client.disconnect()
-                        except:
-                            pass
+                    try:
+                        await client.disconnect()
+                    except:
+                        pass
 
                 if processed % 5 == 0 or processed == total_files:
                     try:
@@ -1751,7 +1695,6 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if is_owner(user_id):
         owner_accounts = await load_owner_accounts()
-        print(f"DEBUG show_main_menu: owner_accounts count = {len(owner_accounts)}", flush=True)
         active_count = 0
         for acc in owner_accounts[:30]:
             if await is_account_live(acc):
@@ -1820,13 +1763,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await create_user_if_not_exists(user_id, username, first_name)
     await show_main_menu(update, context)
-
-# ========== MYID COMMAND ==========
-async def myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        f"Your Telegram user ID: `{update.effective_user.id}`",
-        parse_mode='Markdown'
-    )
 
 # ========== GIVE ACCESS ==========
 async def give_access_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1987,8 +1923,8 @@ async def handle_remove_access(update: Update, context: ContextTypes.DEFAULT_TYP
 
     try:
         target_user = int(text.strip())
-        if is_owner(target_user):
-            await update.message.reply_text("❌ Cannot remove owner's access!")
+        if target_user == OWNER_ID:
+            await update.message.reply_text("❌ Cannot remove owner!")
             WAITING_FOR.pop(user_id, None)
             return
 
@@ -3292,3 +3228,1033 @@ async def handle_schedule_account_count(update: Update, context: ContextTypes.DE
 
         if count < 1 or count > len(accounts):
             await update.message.reply_text(f"❌ Send number between 1 and {len(accounts)}")
+            return
+
+        spam_message = schedule_data.get('spam_message', '')
+        await save_scheduled(user_id, schedule_data['action'], schedule_data['link'],
+                      schedule_data['time_str'], count, spam_message)
+
+        WAITING_FOR.pop(user_id, None)
+        PENDING_SCHEDULE.pop(user_id, None)
+
+        await update.message.reply_text(
+            f"✅ Scheduled!\n\n"
+            f"Action: {schedule_data['action']}\n"
+            f"Time: {schedule_data['time_str']}\n"
+            f"Accounts: {count}\n\nWill run at scheduled time!")
+
+    except ValueError:
+        await update.message.reply_text("❌ Send valid number!")
+
+async def schedule_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.callback_query.from_user.id
+    scheduled_list = await load_scheduled(user_id)
+
+    if not scheduled_list:
+        await update.callback_query.edit_message_text("❌ No schedules!")
+        return
+
+    WAITING_FOR[user_id] = 'cancel_schedule_id'
+
+    text = "❌ Cancel Schedule\n\nSend Schedule ID:\n\n"
+    for s in scheduled_list:
+        text += f"ID: {s[0]} - {s[1]}\n"
+
+    keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="cancel_action")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
+
+async def handle_cancel_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    user_id = update.effective_user.id
+    try:
+        schedule_id = int(text.strip())
+        await delete_scheduled(schedule_id)
+        WAITING_FOR.pop(user_id, None)
+        await update.message.reply_text(f"✅ Schedule {schedule_id} cancelled!")
+    except:
+        await update.message.reply_text("❌ Invalid ID!")
+        WAITING_FOR.pop(user_id, None)
+
+# ========== ADMIN PANEL ==========
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.callback_query.from_user.id
+    if not is_owner(user_id) and not await is_admin_user(user_id):
+        await update.callback_query.answer("❌ Only Owner/Admin!", show_alert=True)
+        return
+
+    keyboard = [
+        [styled_button("📢 Campaign (All)", callback_data="admin_campaign_all")],
+        [styled_button("👤 Campaign (By User)", callback_data="admin_campaign_user")],
+        [styled_button("📁 All Campaigns", callback_data="admin_all_campaigns")],
+        [styled_button("🚫 Ban User", callback_data="admin_ban_user"),
+         styled_button("✅ Unban User", callback_data="admin_unban_user")],
+        [styled_button("👥 All Users", callback_data="admin_all_users")],
+        [styled_button("👑 Grant Admin", callback_data="admin_grant_admin"),
+         styled_button("🔽 Revoke Admin", callback_data="admin_revoke_admin")],
+        [styled_button("📤 Export DB", callback_data="admin_export_db"),
+         styled_button("📥 Import DB", callback_data="admin_import_db")],
+        [styled_button("📢 Broadcast", callback_data="admin_broadcast")],
+        [styled_button("👥 Give Access", callback_data="give_access"),
+         styled_button("❌ Remove Access", callback_data="remove_access")],
+        [styled_button("🔙 Main", callback_data="main")],
+    ]
+
+    await update.callback_query.edit_message_text(
+        "👑 ADMIN PANEL\n━━━━━━━━━━━━━━━━━━━━━━\n\nSelect an option:",
+        reply_markup={"inline_keyboard": [[dict(btn) for btn in row] for row in keyboard]}
+    )
+
+# ========== ADMIN CAMPAIGN (ALL) ==========
+async def admin_campaign_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.callback_query.from_user.id
+    if not is_owner(user_id) and not await is_admin_user(user_id):
+        await update.callback_query.answer("❌ Only Owner/Admin!", show_alert=True)
+        return
+
+    all_accounts = await load_owner_accounts()
+    all_accounts = [a for a in all_accounts if a.get('type') != 'pyrogram']
+    live_accounts = []
+    for a in all_accounts:
+        if await is_account_live(a):
+            live_accounts.append(a)
+
+    if not live_accounts:
+        await update.callback_query.edit_message_text("❌ No active accounts available!")
+        return
+
+    await show_shopping_menu(update, context, live_accounts)
+
+# ========== ADMIN CAMPAIGN (BY USER) ==========
+async def admin_campaign_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.callback_query.from_user.id
+    if not is_owner(user_id) and not await is_admin_user(user_id):
+        await update.callback_query.answer("❌ Only Owner/Admin!", show_alert=True)
+        return
+
+    WAITING_FOR[user_id] = 'admin_campaign_user_id'
+    keyboard = [[styled_button("CANCEL", callback_data="cancel_action")]]
+    reply_markup = {"inline_keyboard": [[dict(btn) for btn in row] for row in keyboard]}
+    await update.callback_query.edit_message_text(
+        "👑 Campaign on User\n\nSend User ID:",
+        reply_markup=reply_markup)
+
+async def handle_admin_campaign_user(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    user_id = update.effective_user.id
+    if not is_owner(user_id) and not await is_admin_user(user_id):
+        await update.message.reply_text("❌ Only Owner/Admin!")
+        WAITING_FOR.pop(user_id, None)
+        return
+
+    try:
+        target_user = int(text.strip())
+        accounts = await get_accessible_accounts(target_user)
+        accounts = [a for a in accounts if a.get('type') != 'pyrogram']
+        live_accounts = []
+        for a in accounts:
+            if await is_account_live(a):
+                live_accounts.append(a)
+
+        if not live_accounts:
+            await update.message.reply_text("❌ No active accounts for this user!")
+            WAITING_FOR.pop(user_id, None)
+            return
+
+        context.user_data['campaign_accounts'] = live_accounts
+        WAITING_FOR.pop(user_id, None)
+
+        await show_shopping_menu(update, context, live_accounts)
+    except:
+        await update.message.reply_text("❌ Invalid User ID!")
+        WAITING_FOR.pop(user_id, None)
+
+# ========== BROADCAST ==========
+async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.callback_query.from_user.id
+    if not is_owner(user_id) and not await is_admin_user(user_id):
+        await update.callback_query.answer("❌ Only Owner/Admin!", show_alert=True)
+        return
+
+    WAITING_FOR[user_id] = 'broadcast_message'
+    keyboard = [[styled_button("CANCEL", callback_data="cancel_action")]]
+    reply_markup = {"inline_keyboard": [[dict(btn) for btn in row] for row in keyboard]}
+    await update.callback_query.edit_message_text(
+        "📢 BROADCAST\n\nSend the message you want to broadcast to all users.\n\nOnly text messages are supported.",
+        reply_markup=reply_markup)
+
+async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    user_id = update.effective_user.id
+    if not is_owner(user_id) and not await is_admin_user(user_id):
+        await update.message.reply_text("❌ Only Owner/Admin!")
+        WAITING_FOR.pop(user_id, None)
+        return
+
+    status_msg = await update.message.reply_text("⏳ Sending broadcast...")
+    users = await get_all_users()
+    sent = 0
+    failed = 0
+
+    for u in users:
+        uid = u[0]
+        try:
+            await context.bot.send_message(chat_id=uid, text=text)
+            sent += 1
+        except:
+            failed += 1
+        await asyncio.sleep(0.05)
+
+    WAITING_FOR.pop(user_id, None)
+    await status_msg.edit_text(
+        f"✅ Broadcast completed!\n\n"
+        f"👥 Total users: {len(users)}\n"
+        f"✅ Sent: {sent}\n"
+        f"❌ Failed: {failed}"
+    )
+
+# ========== GRANT/REVOKE ADMIN ==========
+async def admin_grant_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.callback_query.from_user.id
+    if not is_owner(user_id) and not await is_admin_user(user_id):
+        await update.callback_query.answer("❌ Only Owner/Admin!", show_alert=True)
+        return
+
+    WAITING_FOR[user_id] = 'admin_grant_admin_id'
+    keyboard = [[styled_button("CANCEL", callback_data="cancel_action")]]
+    reply_markup = {"inline_keyboard": [[dict(btn) for btn in row] for row in keyboard]}
+    await update.callback_query.edit_message_text("👑 Grant Admin\n\nSend User ID:", reply_markup=reply_markup)
+
+async def admin_revoke_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.callback_query.from_user.id
+    if not is_owner(user_id) and not await is_admin_user(user_id):
+        await update.callback_query.answer("❌ Only Owner/Admin!", show_alert=True)
+        return
+
+    WAITING_FOR[user_id] = 'admin_revoke_admin_id'
+    keyboard = [[styled_button("CANCEL", callback_data="cancel_action")]]
+    reply_markup = {"inline_keyboard": [[dict(btn) for btn in row] for row in keyboard]}
+    await update.callback_query.edit_message_text("🔽 Revoke Admin\n\nSend User ID:", reply_markup=reply_markup)
+
+async def handle_admin_grant_admin(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    user_id = update.effective_user.id
+    if not is_owner(user_id) and not await is_admin_user(user_id):
+        await update.message.reply_text("❌ Only Owner/Admin!")
+        WAITING_FOR.pop(user_id, None)
+        return
+
+    try:
+        target = int(text.strip())
+        if target == OWNER_ID:
+            await update.message.reply_text("❌ Cannot change owner's admin status!")
+            WAITING_FOR.pop(user_id, None)
+            return
+        await grant_admin(target)
+        WAITING_FOR.pop(user_id, None)
+        await update.message.reply_text(f"✅ User {target} is now an Admin!")
+    except:
+        await update.message.reply_text("❌ Invalid User ID!")
+        WAITING_FOR.pop(user_id, None)
+
+async def handle_admin_revoke_admin(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    user_id = update.effective_user.id
+    if not is_owner(user_id) and not await is_admin_user(user_id):
+        await update.message.reply_text("❌ Only Owner/Admin!")
+        WAITING_FOR.pop(user_id, None)
+        return
+
+    try:
+        target = int(text.strip())
+        if target == OWNER_ID:
+            await update.message.reply_text("❌ Cannot change owner's admin status!")
+            WAITING_FOR.pop(user_id, None)
+            return
+        await revoke_admin(target)
+        WAITING_FOR.pop(user_id, None)
+        await update.message.reply_text(f"✅ Admin revoked for User {target}!")
+    except:
+        await update.message.reply_text("❌ Invalid User ID!")
+        WAITING_FOR.pop(user_id, None)
+
+# ========== BAN/UNBAN ==========
+async def admin_ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.callback_query.from_user.id
+    if not is_owner(user_id) and not await is_admin_user(user_id):
+        await update.callback_query.answer("❌ Only Owner/Admin!", show_alert=True)
+        return
+
+    WAITING_FOR[user_id] = 'admin_ban_user_id'
+    keyboard = [[styled_button("CANCEL", callback_data="cancel_action")]]
+    reply_markup = {"inline_keyboard": [[dict(btn) for btn in row] for row in keyboard]}
+    await update.callback_query.edit_message_text("🚫 Ban User\n\nSend User ID:", reply_markup=reply_markup)
+
+async def admin_unban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.callback_query.from_user.id
+    if not is_owner(user_id) and not await is_admin_user(user_id):
+        await update.callback_query.answer("❌ Only Owner/Admin!", show_alert=True)
+        return
+
+    WAITING_FOR[user_id] = 'admin_unban_user_id'
+    keyboard = [[styled_button("CANCEL", callback_data="cancel_action")]]
+    reply_markup = {"inline_keyboard": [[dict(btn) for btn in row] for row in keyboard]}
+    await update.callback_query.edit_message_text("✅ Unban User\n\nSend User ID:", reply_markup=reply_markup)
+
+async def admin_all_campaigns(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.callback_query.from_user.id
+    if not is_owner(user_id) and not await is_admin_user(user_id):
+        await update.callback_query.answer("❌ Only Owner/Admin!", show_alert=True)
+        return
+
+    text = "📁 ALL CAMPAIGNS\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    campaign_count = 0
+    cursor = db.campaigns.find().sort("timestamp", -1).limit(20)
+    async for doc in cursor:
+        campaign_count += 1
+        text += f"{campaign_count}. {doc['action']}\n   {doc['target'][:40]}\n   {doc['result']}\n   {doc['timestamp'][:16]}\n\n"
+        if campaign_count >= 20:
+            text += "\n... and more"
+            break
+
+    if campaign_count == 0:
+        text += "No campaigns!"
+
+    keyboard = [[styled_button("BACK", callback_data="admin_panel")]]
+    reply_markup = {"inline_keyboard": [[dict(btn) for btn in row] for row in keyboard]}
+    await update.callback_query.edit_message_text(text[:4000], reply_markup=reply_markup)
+
+async def admin_all_users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.callback_query.from_user.id
+    if not is_owner(user_id) and not await is_admin_user(user_id):
+        await update.callback_query.answer("❌ Only Owner/Admin!", show_alert=True)
+        return
+
+    users = await get_all_users()
+
+    if not users:
+        await update.callback_query.edit_message_text("📭 No users!")
+        return
+
+    text = "👥 ALL USERS\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    count = 0
+    for u in users:
+        if count >= 20:
+            text += "\n... and more"
+            break
+        uid, username, first_name, joined_date, is_banned_user, access_expiry, shared_limit, is_admin_flag = u
+        personal_accounts = await load_accounts(uid)
+
+        if uid == OWNER_ID:
+            status = "👑 OWNER"
+        elif is_admin_flag:
+            status = "👨‍💼 ADMIN"
+        elif is_banned_user:
+            status = "🚫 BANNED"
+        elif access_expiry:
+            status = "✅ ACCESS"
+        else:
+            status = "👤 USER"
+
+        text += f"{status}\n🆔 {uid}\n📛 {first_name or 'Unknown'}\n📝 @{username or 'No username'}\n📱 Accounts: {len(personal_accounts)}"
+        if shared_limit:
+            text += f"\n🔗 Shared: {shared_limit}"
+        if access_expiry:
+            exp_date = datetime.fromisoformat(access_expiry).strftime("%Y-%m-%d")
+            text += f"\n⏰ Expiry: {exp_date}"
+        text += "\n━━━━━━━━━━━━━━━━━━━━━━\n"
+        count += 1
+
+    keyboard = [[styled_button("BACK", callback_data="admin_panel")]]
+    reply_markup = {"inline_keyboard": [[dict(btn) for btn in row] for row in keyboard]}
+    await update.callback_query.edit_message_text(text[:4000], reply_markup=reply_markup)
+
+async def handle_admin_ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    user_id = update.effective_user.id
+    if not is_owner(user_id) and not await is_admin_user(user_id):
+        await update.message.reply_text("❌ Only Owner/Admin!")
+        WAITING_FOR.pop(user_id, None)
+        return
+
+    try:
+        target = int(text.strip())
+        if target == OWNER_ID:
+            await update.message.reply_text("❌ Cannot ban owner!")
+            WAITING_FOR.pop(user_id, None)
+            return
+        await ban_user(target)
+        WAITING_FOR.pop(user_id, None)
+        await update.message.reply_text(f"✅ User {target} banned!")
+    except:
+        await update.message.reply_text("❌ Invalid User ID!")
+        WAITING_FOR.pop(user_id, None)
+
+async def handle_admin_unban_user(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    user_id = update.effective_user.id
+    if not is_owner(user_id) and not await is_admin_user(user_id):
+        await update.message.reply_text("❌ Only Owner/Admin!")
+        WAITING_FOR.pop(user_id, None)
+        return
+
+    try:
+        target = int(text.strip())
+        await unban_user(target)
+        WAITING_FOR.pop(user_id, None)
+        await update.message.reply_text(f"✅ User {target} unbanned!")
+    except:
+        await update.message.reply_text("❌ Invalid User ID!")
+        WAITING_FOR.pop(user_id, None)
+
+async def admin_view_live(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.callback_query.from_user.id
+    if not is_owner(user_id) and not await is_admin_user(user_id):
+        await update.callback_query.answer("❌ Only Owner/Admin!", show_alert=True)
+        return
+
+    all_accounts = await load_owner_accounts()
+    live = []
+    for a in all_accounts:
+        if await is_account_live(a):
+            live.append(a)
+
+    text = f"📋 LIVE ACCOUNTS\n━━━━━━━━━━━━━━━━━━━━━━\n\nTotal: {len(live)}\n\n"
+    for a in live[:10]:
+        text += f"👤 @{a.get('username', 'No username')}\n📱 {a['phone']}\n\n"
+
+    keyboard = [[styled_button("Back", callback_data="my_accounts")]]
+    reply_markup = {"inline_keyboard": [[dict(btn) for btn in row] for row in keyboard]}
+    await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
+
+async def admin_view_expired(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.callback_query.from_user.id
+    if not is_owner(user_id) and not await is_admin_user(user_id):
+        await update.callback_query.answer("❌ Only Owner/Admin!", show_alert=True)
+        return
+
+    all_accounts = await load_owner_accounts()
+    expired = []
+    for a in all_accounts:
+        if not await is_account_live(a):
+            expired.append(a)
+
+    text = f"📋 EXPIRED ACCOUNTS\n━━━━━━━━━━━━━━━━━━━━━━\n\nTotal: {len(expired)}\n\n"
+    for a in expired[:10]:
+        text += f"👤 @{a.get('username', 'No username')}\n📱 {a['phone']}\n\n"
+
+    keyboard = [
+        [styled_button("Remove All Expired", callback_data="admin_remove_all_expired")],
+        [styled_button("Back", callback_data="my_accounts")],
+    ]
+    reply_markup = {"inline_keyboard": [[dict(btn) for btn in row] for row in keyboard]}
+    await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
+
+async def admin_remove_all_expired(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.callback_query.from_user.id
+    if not is_owner(user_id) and not await is_admin_user(user_id):
+        await update.callback_query.answer("❌ Only Owner/Admin!", show_alert=True)
+        return
+
+    all_accounts = await load_owner_accounts()
+    expired = [a for a in all_accounts if not await is_account_live(a)]
+    expired_phones = [a.get('phone') for a in expired]
+    new_accounts = [a for a in all_accounts if a.get('phone') not in expired_phones]
+    await save_accounts(OWNER_ID, new_accounts)
+
+    users = await get_all_users()
+    for u in users:
+        uid = u[0]
+        if uid != OWNER_ID:
+            user_accounts = await load_accounts(uid)
+            new_user_accounts = [a for a in user_accounts if a.get('phone') not in expired_phones]
+            if len(user_accounts) != len(new_user_accounts):
+                await save_accounts(uid, new_user_accounts)
+
+    await update.callback_query.edit_message_text(
+        f"✅ Removed {len(expired)} expired accounts!",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="my_accounts")]]))
+
+async def admin_remove_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.callback_query.from_user.id
+    if not is_owner(user_id) and not await is_admin_user(user_id):
+        await update.callback_query.answer("❌ Only Owner/Admin!", show_alert=True)
+        return
+
+    WAITING_FOR[user_id] = 'admin_remove_phone'
+    keyboard = [[styled_button("CANCEL", callback_data="cancel_action")]]
+    reply_markup = {"inline_keyboard": [[dict(btn) for btn in row] for row in keyboard]}
+    await update.callback_query.edit_message_text(
+        "🗑️ Remove Account\n\nSend phone number:\nExample: +919876543210",
+        reply_markup=reply_markup)
+
+async def admin_remove_account(update: Update, context: ContextTypes.DEFAULT_TYPE, phone: str):
+    user_id = update.effective_user.id
+    if not is_owner(user_id) and not await is_admin_user(user_id):
+        await update.message.reply_text("❌ Only Owner/Admin!")
+        WAITING_FOR.pop(user_id, None)
+        return
+
+    owner_accounts = await load_owner_accounts()
+    found = any(a.get('phone') == phone for a in owner_accounts)
+    if not found:
+        await update.message.reply_text("❌ Account not found!")
+        WAITING_FOR.pop(user_id, None)
+        return
+
+    new_owner_accounts = [a for a in owner_accounts if a.get('phone') != phone]
+    await save_accounts(OWNER_ID, new_owner_accounts)
+
+    users = await get_all_users()
+    for u in users:
+        uid = u[0]
+        if uid != OWNER_ID:
+            user_accounts = await load_accounts(uid)
+            new_user_accounts = [a for a in user_accounts if a.get('phone') != phone]
+            if len(user_accounts) != len(new_user_accounts):
+                await save_accounts(uid, new_user_accounts)
+
+    WAITING_FOR.pop(user_id, None)
+    await update.message.reply_text(f"✅ Account {phone} removed!")
+
+async def admin_remove_all_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.callback_query.from_user.id
+    if not is_owner(user_id) and not await is_admin_user(user_id):
+        await update.callback_query.answer("❌ Only Owner/Admin!", show_alert=True)
+        return
+
+    all_accounts = await load_owner_accounts()
+    keyboard = [
+        [styled_button("YES, REMOVE ALL", callback_data="admin_remove_all_confirm")],
+        [styled_button("CANCEL", callback_data="cancel_action")],
+    ]
+    reply_markup = {"inline_keyboard": [[dict(btn) for btn in row] for row in keyboard]}
+    await update.callback_query.edit_message_text(
+        f"⚠️ WARNING!\n\nRemove ALL {len(all_accounts)} accounts?\n\nThis cannot be undone!",
+        reply_markup=reply_markup)
+
+async def admin_remove_all_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.callback_query.from_user.id
+    if not is_owner(user_id) and not await is_admin_user(user_id):
+        await update.callback_query.answer("❌ Only Owner/Admin!", show_alert=True)
+        return
+
+    await save_accounts(OWNER_ID, [])
+    users = await get_all_users()
+    for u in users:
+        uid = u[0]
+        if uid != OWNER_ID:
+            await save_accounts(uid, [])
+
+    await update.callback_query.edit_message_text(
+        "✅ All accounts removed!",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Main", callback_data="main")]]))
+
+async def user_remove_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.callback_query.from_user.id
+    WAITING_FOR[user_id] = 'user_remove_phone'
+    keyboard = [[styled_button("CANCEL", callback_data="cancel_action")]]
+    reply_markup = {"inline_keyboard": [[dict(btn) for btn in row] for row in keyboard]}
+    await update.callback_query.edit_message_text(
+        "🗑️ Remove Personal Account\n\nSend phone number to remove:",
+        reply_markup=reply_markup)
+
+async def user_remove_account(update: Update, context: ContextTypes.DEFAULT_TYPE, phone: str):
+    user_id = update.effective_user.id
+    accounts = await load_accounts(user_id)
+    found = any(a.get('phone') == phone for a in accounts)
+    if not found:
+        await update.message.reply_text("❌ Account not found in your personal accounts!")
+        WAITING_FOR.pop(user_id, None)
+        return
+
+    new_accounts = [a for a in accounts if a.get('phone') != phone]
+    await save_accounts(user_id, new_accounts)
+    WAITING_FOR.pop(user_id, None)
+    await update.message.reply_text(f"✅ Account {phone} removed from your personal accounts!")
+
+# ========== MY CAMPAIGNS, STATS, PROFILE, HELP, SUPPORT ==========
+async def my_campaigns(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.callback_query.from_user.id
+    campaigns = await load_campaigns(user_id)
+    if not campaigns:
+        await update.callback_query.edit_message_text("📁 No purchases yet!\n\nRun campaigns from Shopping.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 MAIN", callback_data="main")]]))
+        return
+
+    text = "📁 MY PURCHASED\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    for i, c in enumerate(campaigns[:10], 1):
+        text += f"{i}. {c['action']}\n   Target: {c['target'][:40]}\n   Result: {c['result']}\n   Time: {c['timestamp'].split('.')[0]}\n\n"
+
+    await update.callback_query.edit_message_text(text[:4000], reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 MAIN", callback_data="main")]]))
+
+async def my_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.callback_query.from_user.id
+    personal_accounts = await load_accounts(user_id)
+    personal_active = 0
+    for a in personal_accounts:
+        if await is_account_live(a):
+            personal_active += 1
+
+    shared_limit = await get_user_shared_limit(user_id)
+    total_available = len(await get_accessible_accounts(user_id))
+    campaigns = await load_campaigns(user_id)
+
+    text = f"📊 YOUR STATS\n━━━━━━━━━━━━━━━━━━━━━━\n\n📱 Personal: {len(personal_accounts)} (🟢{personal_active})\n🔗 Shared Limit: {shared_limit}\n📊 Total Available: {total_available}\n📁 Purchased: {len(campaigns)}"
+
+    await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 MAIN", callback_data="main")]]))
+
+async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.callback_query.from_user.id
+    settings = await load_settings(user_id)
+    current_delay = settings.get('delay', DEFAULT_DELAY)
+
+    keyboard = [
+        [styled_button("0.5s", callback_data="delay_0.5"),
+         styled_button("1s", callback_data="delay_1.0")],
+        [styled_button("1.5s", callback_data="delay_1.5"),
+         styled_button("2s", callback_data="delay_2.0")],
+        [styled_button("Custom", callback_data="custom_delay")],
+        [styled_button("CANCEL", callback_data="cancel_action")],
+    ]
+    reply_markup = {"inline_keyboard": [[dict(btn) for btn in row] for row in keyboard]}
+    await update.callback_query.edit_message_text(f"⚙️ SETTINGS\nDelay: {current_delay}s", reply_markup=reply_markup)
+
+async def set_delay(update: Update, context: ContextTypes.DEFAULT_TYPE, delay: str):
+    user_id = update.callback_query.from_user.id
+    settings = await load_settings(user_id)
+    settings['delay'] = float(delay)
+    await save_settings(user_id, settings)
+
+    keyboard = [[styled_button("BACK", callback_data="settings")]]
+    reply_markup = {"inline_keyboard": [[dict(btn) for btn in row] for row in keyboard]}
+    await update.callback_query.edit_message_text(f"✅ Delay set to {delay}s", reply_markup=reply_markup)
+
+async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.callback_query.from_user.id
+    doc = await get_user(user_id)
+    if not doc:
+        await update.callback_query.edit_message_text("❌ User not found!")
+        return
+
+    first_name = doc.get('first_name', 'Unknown')
+    username = doc.get('username', 'Unknown')
+    joined_date = doc.get('joined_date', 'Unknown')
+    access_expiry = doc.get('access_expiry')
+    shared_limit = doc.get('shared_id_limit', 0)
+    is_admin_flag = doc.get('is_admin', 0)
+
+    personal_accounts = await load_accounts(user_id)
+    campaigns = await load_campaigns(user_id)
+
+    admin_badge = " 👑 OWNER" if user_id == OWNER_ID else (" 👨‍💼 ADMIN" if is_admin_flag else "")
+
+    text = f"👤 PROFILE{admin_badge}\n━━━━━━━━━━━━━━━━━━━━━━\n\n🆔 {user_id}\n👤 {first_name}\n📝 @{username}\n📅 {joined_date[:10] if joined_date else 'Unknown'}\n📱 Personal: {len(personal_accounts)}\n🔗 Shared Limit: {shared_limit}\n📁 Purchased: {len(campaigns)}"
+
+    if access_expiry and user_id != OWNER_ID:
+        exp_date = datetime.fromisoformat(access_expiry).strftime("%Y-%m-%d")
+        text += f"\n⏰ Access until: {exp_date}"
+
+    keyboard = [[styled_button("BACK", callback_data="main")]]
+    reply_markup = {"inline_keyboard": [[dict(btn) for btn in row] for row in keyboard]}
+    await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
+
+async def help_guide(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = """🤖 HOW TO USE
+━━━━━━━━━━━━━━━━━━━━━━
+
+📌 ADD ACCOUNTS
+Phone + OTP / Session String / Bulk Sessions / ZIP Upload
+
+📌 SHOPPING (CAMPAIGNS)
+1. Click 'Shopping'
+2. Select action
+3. Choose reaction type (if applicable)
+4. Send link
+5. Choose account count
+6. Tap 'Run'
+
+📌 ACTIONS (ALL WORKING ✅)
+• ❤️ React Only - choose normal or premium
+• 🎲 Different Reactions - Random emoji each account
+• 🎨 Multiple Reactions - Choose multiple emojis, split accounts (normal only)
+• ✨ Premium Emoji - Auto-detect premium reaction
+• 👁️ View - Increase view count (REAL VIEWS)
+• 🗳️ Vote - Click poll button
+• 📢 Join - Join channel
+• 🚪 Leave Channel - Leave specific channel
+• 🗑️ LEAVE ALL - Leave all channels
+• 💬 Bulk DM - Send messages
+• 🔊 VC - Join voice chat (mic off)
+• 📢 Group Spam - Spam in groups
+
+📌 SUPPORTED LINKS
+• Public Post: t.me/username/123
+• Private Post: t.me/c/123456789/123
+• Private Invite: t.me/joinchat/xxxxx
+• Channel Join: t.me/username or invite link
+
+📌 PREMIUM EMOJIS
+Auto-detection: react manually, bot detects and uses same premium emoji.
+
+📌 ADMIN FEATURES
+Owner can grant admin rights and broadcast messages.
+
+📌 ACCESS
+Contact @SHIVAMKR_208
+
+👨‍💻 Support: @AUTO_BOTS_INFO"""
+
+    keyboard = [[styled_button("BACK", callback_data="main")]]
+    reply_markup = {"inline_keyboard": [[dict(btn) for btn in row] for row in keyboard]}
+
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
+    else:
+        await update.message.reply_text(text, reply_markup=reply_markup)
+
+async def support(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = """📞 SUPPORT & CONTACT
+━━━━━━━━━━━━━━━━━━━━━━
+
+👨‍💻 Channel: @AUTO_BOTS_INFO
+📞 Access/Support: @SHIVAMKR_208
+🔧 Bot Owner: @SHIVAMKR_208
+
+For issues, bugs, or access requests, contact above."""
+
+    keyboard = [[styled_button("BACK", callback_data="main")]]
+    reply_markup = {"inline_keyboard": [[dict(btn) for btn in row] for row in keyboard]}
+
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
+    else:
+        await update.message.reply_text(text, reply_markup=reply_markup)
+
+async def custom_delay(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.callback_query.from_user.id
+    WAITING_FOR[user_id] = 'custom_delay'
+    keyboard = [[styled_button("CANCEL", callback_data="cancel_action")]]
+    reply_markup = {"inline_keyboard": [[dict(btn) for btn in row] for row in keyboard]}
+    await update.callback_query.edit_message_text("Send delay in seconds (example: 0.8):", reply_markup=reply_markup)
+
+async def handle_custom_delay(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    user_id = update.effective_user.id
+    try:
+        delay = float(text)
+        if delay <= 0:
+            raise ValueError
+        settings = await load_settings(user_id)
+        settings['delay'] = delay
+        await save_settings(user_id, settings)
+        WAITING_FOR.pop(user_id, None)
+        await update.message.reply_text(f"✅ Delay set to {delay}s")
+    except:
+        await update.message.reply_text("❌ Invalid value!")
+        WAITING_FOR.pop(user_id, None)
+
+# ========== MESSAGE HANDLER ==========
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return
+
+    user_id = update.effective_user.id
+    text = update.message.text.strip()
+    state = WAITING_FOR.get(user_id)
+
+    if state == 'phone':
+        await handle_phone(update, context, text)
+    elif state == 'session_string':
+        await handle_session_string(update, context, text)
+    elif state == 'bulk_sessions':
+        await handle_bulk_sessions(update, context, text)
+    elif state == 'pyrogram_session':
+        await handle_pyrogram_session(update, context, text)
+    elif state == 'campaign_link':
+        await handle_campaign_link(update, context, text)
+    elif state == 'spam_message':
+        await handle_spam_message(update, context, text)
+    elif state == 'account_count':
+        await handle_account_count(update, context, text)
+    elif state == 'custom_delay':
+        await handle_custom_delay(update, context, text)
+    elif state == 'admin_remove_phone':
+        await admin_remove_account(update, context, text)
+    elif state == 'user_remove_phone':
+        await user_remove_account(update, context, text)
+    elif state == 'admin_campaign_user_id':
+        await handle_admin_campaign_user(update, context, text)
+    elif state == 'admin_ban_user_id':
+        await handle_admin_ban_user(update, context, text)
+    elif state == 'admin_unban_user_id':
+        await handle_admin_unban_user(update, context, text)
+    elif state == 'admin_grant_admin_id':
+        await handle_admin_grant_admin(update, context, text)
+    elif state == 'admin_revoke_admin_id':
+        await handle_admin_revoke_admin(update, context, text)
+    elif state == 'access_user_id':
+        await handle_access_user_id(update, context, text)
+    elif state == 'access_days':
+        await handle_access_days(update, context, text)
+    elif state == 'access_shared_limit':
+        await handle_access_shared_limit(update, context, text)
+    elif state == 'remove_access_user_id':
+        await handle_remove_access(update, context, text)
+    elif state == 'schedule_link':
+        await handle_schedule_link(update, context, text)
+    elif state == 'schedule_spam_message':
+        await handle_schedule_spam_message(update, context, text)
+    elif state == 'schedule_time':
+        await handle_schedule_time(update, context, text)
+    elif state == 'schedule_account_count':
+        await handle_schedule_account_count(update, context, text)
+    elif state == 'cancel_schedule_id':
+        await handle_cancel_schedule(update, context, text)
+    elif state == 'private_view_link':
+        await handle_private_view(update, context, text)
+    elif state == 'leave_specific_link':
+        await handle_leave_specific(update, context, text)
+    elif state == 'premium_link':
+        await handle_premium_link(update, context, text)
+    elif state == 'broadcast_message':
+        await handle_broadcast(update, context, text)
+    elif state == 'schedule_action':
+        pass
+    elif text.isdigit() and len(text) == 5 and user_id in PENDING_OTP:
+        await verify_otp(update, context, text)
+    elif user_id in PENDING_2FA:
+        await verify_2fa(update, context, text)
+    else:
+        await update.message.reply_text("❌ Send /start")
+
+# ========== CALLBACK HANDLER ==========
+async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    try:
+        await query.answer()
+    except:
+        pass
+
+    data = query.data
+
+    if data == "main":
+        await show_main_menu(update, context)
+    elif data == "add_account":
+        await add_account_menu(update, context)
+    elif data == "add_phone_otp":
+        await add_phone_otp(update, context)
+    elif data == "add_session_string":
+        await add_session_string(update, context)
+    elif data == "add_pyrogram_session":
+        await add_pyrogram_session(update, context)
+    elif data == "add_bulk_sessions":
+        await add_bulk_sessions(update, context)
+    elif data == "add_zip":
+        await add_zip(update, context)
+    elif data == "my_accounts":
+        await my_accounts(update, context)
+    elif data == "new_campaign":
+        await new_campaign(update, context)
+    elif data == "private_channel_view":
+        await private_channel_view(update, context)
+    elif data == "leave_channel_menu":
+        await leave_channel_menu(update, context)
+    elif data == "leave_specific_channel":
+        await leave_specific_channel(update, context)
+    elif data == "leave_all_channels":
+        await leave_all_channels(update, context)
+    elif data == "confirm_leave_all":
+        await confirm_leave_all(update, context)
+    elif data == "scheduled":
+        await scheduled_menu(update, context)
+    elif data == "schedule_new":
+        await schedule_new(update, context)
+    elif data == "schedule_cancel":
+        await schedule_cancel(update, context)
+    elif data.startswith("schedule_action_"):
+        action = data.replace("schedule_action_", "")
+        await schedule_action_handler(update, context, action)
+    elif data.startswith("campaign_action_"):
+        action = data.replace("campaign_action_", "")
+        await campaign_action_handler(update, context, action)
+    elif data == "campaign_normal_emoji":
+        await campaign_normal_emoji(update, context)
+    elif data == "campaign_premium_mode":
+        await campaign_premium_mode(update, context)
+    elif data.startswith("select_emoji_"):
+        await select_emoji_callback(update, context)
+    elif data == "emoji_ready":
+        await emoji_ready_callback(update, context)
+    elif data.startswith("select_premium_"):
+        await campaign_premium_mode(update, context)
+    elif data.startswith("use_all_"):
+        await use_all_callback(update, context)
+    elif data == "run_campaign":
+        await run_campaign(update, context)
+    elif data == "my_campaigns":
+        await my_campaigns(update, context)
+    elif data == "my_stats":
+        await my_stats(update, context)
+    elif data == "settings":
+        await settings_menu(update, context)
+    elif data == "profile":
+        await profile(update, context)
+    elif data == "help":
+        await help_guide(update, context)
+    elif data == "support":
+        await support(update, context)
+    elif data.startswith("delay_"):
+        await set_delay(update, context, data.replace("delay_", ""))
+    elif data == "custom_delay":
+        await custom_delay(update, context)
+    elif data == "admin_panel":
+        await admin_panel(update, context)
+    elif data == "admin_campaign_all":
+        await admin_campaign_all(update, context)
+    elif data == "admin_campaign_user":
+        await admin_campaign_user(update, context)
+    elif data == "admin_ban_user":
+        await admin_ban_user(update, context)
+    elif data == "admin_unban_user":
+        await admin_unban_user(update, context)
+    elif data == "admin_grant_admin":
+        await admin_grant_admin(update, context)
+    elif data == "admin_revoke_admin":
+        await admin_revoke_admin(update, context)
+    elif data == "admin_all_campaigns":
+        await admin_all_campaigns(update, context)
+    elif data == "admin_all_users":
+        await admin_all_users_list(update, context)
+    elif data == "admin_view_live":
+        await admin_view_live(update, context)
+    elif data == "admin_view_expired":
+        await admin_view_expired(update, context)
+    elif data == "admin_remove_prompt":
+        await admin_remove_prompt(update, context)
+    elif data == "admin_remove_all_prompt":
+        await admin_remove_all_prompt(update, context)
+    elif data == "admin_remove_all_confirm":
+        await admin_remove_all_confirm(update, context)
+    elif data == "admin_remove_all_expired":
+        await admin_remove_all_expired(update, context)
+    elif data == "user_remove_prompt":
+        await user_remove_prompt(update, context)
+    elif data == "give_access":
+        await give_access_start(update, context)
+    elif data == "remove_access":
+        await remove_access_start(update, context)
+    elif data == "access_more_yes":
+        await access_more_yes(update, context)
+    elif data == "access_more_no_direct":
+        await access_more_no_direct(update, context)
+    elif data == "admin_export_db":
+        if not is_owner(query.from_user.id):
+            await query.answer("❌ Only Owner!", show_alert=True)
+            return
+        await query.answer()
+        await context.bot.send_message(chat_id=query.message.chat_id, text="Use /export_db command to export the database.")
+    elif data == "admin_import_db":
+        if not is_owner(query.from_user.id):
+            await query.answer("❌ Only Owner!", show_alert=True)
+            return
+        await query.answer()
+        WAITING_FOR[query.from_user.id] = "import_db_file"
+        keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data="cancel_action")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            "📥 IMPORT DATABASE\n\n"
+            "⚠️ WARNING: This will REPLACE the current database!\n\n"
+            "Send the automation_bot_export.json file now:",
+            reply_markup=reply_markup
+        )
+    elif data == "admin_broadcast":
+        await admin_broadcast(update, context)
+    elif data == "premium_reacted":
+        await premium_reacted_callback(update, context)
+    elif data == "premium_reacted_for_action":
+        await premium_reacted_for_action(update, context)
+    elif data == "reaction_type_normal":
+        await reaction_type_normal(update, context)
+    elif data == "reaction_type_premium":
+        await reaction_type_premium(update, context)
+    elif data == "reaction_type_done":
+        pass
+    elif data == "reaction_type_back":
+        pass
+    elif data == "cancel_action":
+        await cancel_button_handler(update, context)
+
+# ========== SESSION AUTO-SYNC ON START ==========
+async def sync_accounts_on_start():
+    logging.info("🔄 Syncing accounts on startup...")
+    all_users = await get_all_users()
+    total = 0
+    for u in all_users:
+        uid = u[0]
+        accounts = await load_accounts(uid)
+        for acc in accounts:
+            if acc.get('type') == 'pyrogram':
+                continue
+            await is_account_live(acc)
+            total += 1
+            await asyncio.sleep(0.1)
+    logging.info(f"✅ Synced {total} accounts across {len(all_users)} users.")
+
+# ========== STYLED BUTTON HELPER ==========
+def styled_button(label, callback_data):
+    return {"text": label, "callback_data": callback_data}
+
+# ========== MAIN ==========
+async def main():
+    logging.basicConfig(level=logging.ERROR)
+    logging.getLogger('telethon').setLevel(logging.ERROR)
+    logging.getLogger('httpx').setLevel(logging.ERROR)
+
+    await init_mongo()
+    os.makedirs("sessions", exist_ok=True)
+    os.makedirs("data", exist_ok=True)
+
+    asyncio.create_task(check_scheduled_campaigns())
+    asyncio.create_task(sync_accounts_on_start())
+
+    app = Application.builder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("export_db", cmd_export_db))
+    app.add_handler(CommandHandler("import_db", cmd_import_db))
+    app.add_handler(CallbackQueryHandler(callback_handler))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_error_handler(error_handler)
+
+    print("=" * 50)
+    print("🤖 AUTOMATION VOTE BOT STARTED (MongoDB)!")
+    print("=" * 50)
+    print(f"✅ Owner ID: {OWNER_ID}")
+    print("=" * 50)
+    print("✅ ALL ACTIONS WORKING (PUBLIC + PRIVATE):")
+    print("   - Join Channel ✅")
+    print("   - Leave Specific Channel ✅")
+    print("   - LEAVE ALL Channels ✅")
+    print("   - React Only | Different Reactions ✅")
+    print("   - Multiple Reactions (Select Emojis) ✅")
+    print("   - Premium Emoji (Auto-Detect) ✅")
+    print("   - View Only (GetMessagesViewsRequest) ✅")
+    print("   - PRIVATE CHANNEL VIEW (Auto-join + View) ✅")
+    print("   - Vote Only | React + Vote | React + View ✅")
+    print("   - Vote + View | React + Vote + View ✅")
+    print("   - Bulk DM | VC (Voice Chat) ✅")
+    print("   - Group Spam ✅")
+    print("=" * 50)
+    print("✅ ZIP UPLOAD: Add accounts via ZIP file (with timeouts!)")
+    print("✅ ADMIN GRANT: Owner can grant admin rights")
+    print("✅ ACCESS MANAGEMENT: Added to Admin Panel")
+    print("✅ BROADCAST: Admin can broadcast messages")
+    print("✅ PYROGRAM SESSION: Stored (beta, not usable)")
+    print("=" * 50)
+    print("✅ DB: MongoDB (automation_bot)")
+    print("✅ DB COMMANDS: /export_db | /import_db (JSON)")
+    print("=" * 50)
+
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+    await asyncio.Event().wait()
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n🛑 Bot stopped")
