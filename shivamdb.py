@@ -4281,3 +4281,6 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("🛑 Bot stopped", flush=True)
+    except Exception as e:
+        print(f"❌ BOT ERROR: {e}", flush=True)
+        raise
