@@ -45,6 +45,31 @@ PREMIUM_EMOJIS = {
     "angel": "5893411041030707544",
     "devil": "5893079628469246474",
 }
+async def main():
+    print("🚀 Starting bot...", flush=True)
+
+    await init_mongo()
+    print("✅ MongoDB ready", flush=True)
+
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    # YAHAN tumhare EXISTING handlers hone chahiye
+    # app.add_handler(...)
+
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+
+    print("✅ BOT IS RUNNING", flush=True)
+
+    await asyncio.Event().wait()
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("🛑 Bot stopped", flush=True)
 
 NORMAL_EMOJIS = [
     "🔥", "❤️", "👍", "😍", "🎉", "💯", "👏", "🥳", "😁", "🤩",
