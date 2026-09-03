@@ -23,7 +23,7 @@ from telethon.sessions import StringSession
 BOT_TOKEN = "8638232019:AAEJYMle0bcQOkWXSprOVjQOuRgLMY0p1f8"
 API_ID = 34271171
 API_HASH = "434d1585320580b4070a2c7d6b2fafcd"
-OWNER_ID = 8027403165
+OWNER_ID = 7853976578
 
 # ========== MONGODB CONFIGURATION ==========
 MONGO_URI = "mongodb+srv://railway_bot:LZLdkMeqsTU2ZYZz@cluster0.wva6jom.mongodb.net/automation_bot?retryWrites=true&w=majority&appName=Cluster0"
