@@ -4276,8 +4276,27 @@ async def main():
     await app.updater.start_polling()
     await asyncio.Event().wait()
 
+async def main():
+    print("🚀 Starting bot...", flush=True)
+
+    await init_mongo()
+    print("✅ MongoDB ready", flush=True)
+
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    # Yahan tumhare existing app.add_handler(...) hone chahiye
+
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+
+    print("✅ BOT IS RUNNING", flush=True)
+
+    await asyncio.Event().wait()
+
+
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n🛑 Bot stopped")
+        print("🛑 Bot stopped", flush=True)
