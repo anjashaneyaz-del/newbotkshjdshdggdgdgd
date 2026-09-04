@@ -20,7 +20,7 @@ from telethon.errors import SessionPasswordNeededError, FloodWaitError, UserAlre
 from telethon.sessions import StringSession
 
 # ========== CONFIGURATION ==========
-BOT_TOKEN = "8638232019:AAEJYMle0bcQOkWXSprOVjQOuRgLMY0p1f8"
+BOT_TOKEN = "8638232019:AAEumAAcU2rGT1vCXELq2kOm9bkXpzcLATs"
 API_ID = 34271171
 API_HASH = "434d1585320580b4070a2c7d6b2fafcd"
 OWNER_ID = 7853976578
